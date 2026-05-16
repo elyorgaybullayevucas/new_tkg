@@ -1,0 +1,11 @@
+# ORION — Temporal Knowledge Graph Link Prediction
+# pip install -r requirements.txt
+#
+# PyTorch (CUDA versiyasiga qarab):
+#   CUDA 12.1: pip install torch==2.3.0 --index-url https://download.pytorch.org/whl/cu121
+#   CUDA 11.8: pip install torch==2.3.0 --index-url https://download.pytorch.org/whl/cu118
+#   CPU only:  pip install torch==2.3.0 --index-url https://download.pytorch.org/whl/cpu
+
+torch>=2.0.0
+tqdm>=4.64.0
+numpy>=1.24.0

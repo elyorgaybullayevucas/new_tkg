@@ -354,6 +354,104 @@ class DirectScoringHead(nn.Module):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 8. HISTORICAL COPY HEAD  ★ YANGI — DaeMon ni yengish uchun asosiy komponent
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class HistoricalCopyHead(nn.Module):
+    """
+    Entity identity asosida bevosita copy signal.
+
+    Muammo: ORION ning History Transformer faqat rel+Δt ishlatadi —
+            entity identifikatori yo'q! WIKI (MRR 82→91) va YAGO (91→93)
+            uchun entity identity kritik.
+
+    Yechim:
+      copy_score[o] = Σ_{i: hist_ent_i == o} exp(-γ·Δt_i)
+    Vaqtga yaqinroq paydo bo'lgan entity → yuqoriroq ball.
+
+    Query-aware gate: har bir query uchun copy qanchalik muhim?
+      gate = σ(W·final_q) → copy bilan to'g'ridan-to'g'ri predict ni
+      muvozanatlaydi.
+
+    Contrastive Historical Loss (CHL):
+      L_chl = BCE(copy_scores, hist_labels)
+      Historical entity → 1, qolganlar → 0
+      Bu CENET da ishlatilgan g'oya, DaeMon ustidan ishlaydi.
+    """
+
+    def __init__(self, num_entities: int, hidden_dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.num_entities = num_entities
+        # Learnable time-decay rate
+        self.log_decay = nn.Parameter(torch.tensor(-2.0))   # exp(-2)≈0.13 → boshlang'ich
+        # Query-aware gating: query ga qarab copy qanchalik ishonch?
+        self.gate      = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, 1),
+            nn.Sigmoid(),
+        )
+        # Global copy weight (learnable)
+        self.w_copy = nn.Parameter(torch.tensor(1.0))
+
+    def forward(
+        self,
+        hist_ents:   torch.Tensor,   # (B, H) entity indices
+        hist_mask:   torch.Tensor,   # (B, H) bool
+        hist_times:  torch.Tensor,   # (B, H) timestamps
+        query_times: torch.Tensor,   # (B,)
+        query_vec:   torch.Tensor,   # (B, hidden_dim)
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Returns:
+          copy_scores    : (B, N) entity ga bonus ball (softplus scaled)
+          hist_labels    : (B, N) binary — historical entity → 1 (loss uchun)
+        """
+        B, H = hist_ents.shape
+        N    = self.num_entities
+
+        # Vaqt farqi va exponential decay
+        delta = (query_times.unsqueeze(1) - hist_times.float()).clamp(min=0)  # (B, H)
+        gamma = torch.exp(self.log_decay)
+        decay = torch.exp(-gamma * delta) * hist_mask.float()   # (B, H)
+
+        # Har bir entity uchun yig'indi decay
+        ent_idx    = hist_ents.clamp(0, N - 1)                  # (B, H)
+        raw_scores = torch.zeros(B, N, device=hist_ents.device)
+        raw_scores.scatter_add_(1, ent_idx, decay)              # (B, N)
+
+        # Query-aware gate: bu query uchun copy qanchalik ishonchli?
+        gate        = self.gate(query_vec)                       # (B, 1)
+        copy_scores = raw_scores * gate * F.softplus(self.w_copy)
+
+        # Binary labels: historical entity → 1 (CHL loss uchun)
+        hist_labels = (raw_scores > 0).float()                  # (B, N)
+
+        return copy_scores, hist_labels
+
+    def contrastive_loss(
+        self,
+        copy_scores: torch.Tensor,   # (B, N) raw_scores (gate yo'q)
+        hist_labels: torch.Tensor,   # (B, N) binary
+    ) -> torch.Tensor:
+        """
+        Contrastive Historical Loss (CENET uslubida):
+          BCE(copy_scores_logit, hist_labels)
+        Historical entityni non-historical dan ajratishni o'rgatadi.
+        """
+        # Logit: log(score + ε) — raw scores musbat, logit sifatida ishlatamiz
+        logit = torch.log(copy_scores.detach().clamp(min=1e-8) + 1e-8)
+        # Positive/negative imbalance → pos_weight
+        n_pos = hist_labels.sum(1).clamp(min=1)
+        n_neg = (1 - hist_labels).sum(1).clamp(min=1)
+        pos_w = (n_neg / n_pos).unsqueeze(1).clamp(max=50.0)
+        return F.binary_cross_entropy_with_logits(
+            logit, hist_labels, pos_weight=pos_w, reduction="mean"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 8. ORION — ASOSIY MODEL
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -387,6 +485,8 @@ class ORIONModel(nn.Module):
         label_smoothing: float = 0.1,
         w_direct:        float = 0.0,
         w_pattern_div:   float = 0.01,
+        w_copy:          float = 1.0,
+        w_hist_contrast: float = 0.5,
         use_history:     bool  = False,
         use_diachronic:  bool  = False,
         max_history:     int   = 64,
@@ -409,6 +509,8 @@ class ORIONModel(nn.Module):
         self.label_smoothing    = label_smoothing
         self.w_direct           = w_direct
         self.w_pattern_div      = w_pattern_div
+        self.w_copy             = w_copy
+        self.w_hist_contrast    = w_hist_contrast
         self.use_history        = use_history
         self.use_diachronic     = use_diachronic
 
@@ -459,9 +561,13 @@ class ORIONModel(nn.Module):
             )
             self.hist_norm       = nn.LayerNorm(hidden_dim)
             self.query_hist_norm = nn.LayerNorm(hidden_dim)  # alohida — ikki marta ishlatishdan saqlanish
+
+            # HistoricalCopyHead — entity-identity copy signal [beats DaeMon on WIKI/YAGO]
+            self.copy_head = HistoricalCopyHead(num_entities, hidden_dim, dropout)
         else:
             self.relation_profile = self.hist_transformer = self.hist_to_entity = None
             self.gate_mem = self.nb_ctx = self.hist_norm = self.query_hist_norm = None
+            self.copy_head = None
 
         # ── Path Encoder (entity-independent) ─────────────────────────────────
         self.path_encoder = TemporalTransformer(
@@ -654,6 +760,19 @@ class ORIONModel(nn.Module):
             s_t = self._diachronic(s_t, times)
             scores = scores + self.w_direct * self.direct_head(s_t, r_emb, all_ent)
 
+        # ── HistoricalCopyHead — entity-identity copy signal ──────────────────
+        hist_contrast = torch.tensor(0.0, device=device)
+        if self.copy_head is not None and history is not None:
+            copy_scores, hist_labels = self.copy_head(
+                history[:, :, 0],    # hist_ents  (B, H)
+                hist_mask,           # hist_mask  (B, H)
+                history[:, :, 2],    # hist_times (B, H)
+                times,               # query_times (B,)
+                final_q,             # query_vec  (B, H_dim)
+            )
+            scores = scores + self.w_copy * copy_scores
+            hist_contrast = self.copy_head.contrastive_loss(copy_scores, hist_labels)
+
         # ── Losses ────────────────────────────────────────────────────────────
         link_loss = F.cross_entropy(scores, objects, label_smoothing=self.label_smoothing)
 
@@ -675,10 +794,11 @@ class ORIONModel(nn.Module):
         pattern_div = self.pattern_lib.diversity_loss()
 
         losses = {
-            "link":        link_loss,
-            "contrastive": pattern_div,   # pattern diversity (trainer contrastive slot)
-            "self_adv":    adv,
-            "ortho_reg":   ortho,
+            "link":          link_loss,
+            "contrastive":   pattern_div,   # pattern diversity (trainer contrastive slot)
+            "self_adv":      adv,
+            "ortho_reg":     ortho,
+            "hist_contrast": hist_contrast, # Contrastive Historical Loss
         }
         return scores, losses
 
@@ -727,6 +847,17 @@ class ORIONModel(nn.Module):
             s_t = s_dynamic if s_dynamic is not None else self.ent_emb(subjects)
             s_t = self._diachronic(s_t, times)
             scores = scores + self.w_direct * self.direct_head(s_t, r_emb, all_ent)
+
+        # HistoricalCopyHead — entity-identity copy signal
+        if self.copy_head is not None and history is not None:
+            copy_scores, _ = self.copy_head(
+                history[:, :, 0],    # hist_ents
+                hist_mask,           # hist_mask
+                history[:, :, 2],    # hist_times
+                times,               # query_times
+                final_q,             # query_vec
+            )
+            scores = scores + self.w_copy * copy_scores
 
         return scores
 

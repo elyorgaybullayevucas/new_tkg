@@ -43,11 +43,13 @@ class Config:
     num_negative:    int   = 256
 
     # ── Loss weights ──────────────────────────────────────────────────────────
-    w_link:        float = 1.0
-    w_contrastive: float = 0.01  # ORION: pattern diversity regularization
-    w_self_adv:    float = 0.5
-    w_direct:      float = 0.0
-    w_ortho_reg:   float = 0.0
+    w_link:          float = 1.0
+    w_contrastive:   float = 0.01  # ORION: pattern diversity regularization
+    w_self_adv:      float = 0.5
+    w_direct:        float = 0.0
+    w_ortho_reg:     float = 0.0
+    w_copy:          float = 1.0   # HistoricalCopyHead score weight
+    w_hist_contrast: float = 0.5   # Contrastive Historical Loss weight
 
     # ── Direct scoring & Diachronic ───────────────────────────────────────────
     use_direct_scoring: bool = False
