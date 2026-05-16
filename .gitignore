@@ -1,31 +1,78 @@
-# Python
+# ── Datasets (serverga qo'lda yuklanadi) ──────────────────────────────────────
+data/ICEWS14/
+data/ICEWS18/
+data/WIKI/
+data/YAGO/
+data/YAGOs/
+data/GDELT/
+data/*.zip
+data/*.rar
+*.zip
+*.rar
+*.tar.gz
+*.tar.bz2
+
+# ── Checkpoints ───────────────────────────────────────────────────────────────
+checkpoints/
+checkpoints_test/
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+*.log
+*.out
+*.err
+nohup.out
+slurm-*.out
+
+# ── Python cache ──────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
 
-# PyTorch
-*.pt
-*.pth
+# ── Virtual environments ───────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+myenv/
+conda-env/
 
-# Logs
-logs/
-
-# Checkpoints
-checkpoints/
-
-# Dataset raw files (katta fayllar, Python kod emas)
-data/*
-!data/__init__.py
-!data/dataset.py
-!data/datamodule.py
-
-# VSCode
+# ── IDE / Editor ──────────────────────────────────────────────────────────────
 .vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
 
-# Claude
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Experiment tracking ────────────────────────────────────────────────────────
+wandb/
+mlruns/
+runs/
+tb_logs/
+
+# ── Claude internal ───────────────────────────────────────────────────────────
 .claude/
 
-# Env
+# ── Temp ──────────────────────────────────────────────────────────────────────
+tmp/
+temp/
+*.tmp
+*.bak
 .env
-myenv/
-*.md
