@@ -112,6 +112,7 @@ class TKGDataModule:
         return WeightedRandomSampler(weights, len(weights), replacement=True)
 
     def _loader(self, ds: TKGEliteDataset, shuffle: bool) -> DataLoader:
+        import torch
         use_balanced = (
             shuffle
             and self.cfg.dataset in ("WIKI", "YAGO", "YAGOs")
@@ -119,13 +120,14 @@ class TKGDataModule:
         sampler = self._make_balanced_sampler(ds) if use_balanced else None
         return DataLoader(
             ds,
-            batch_size  = self.cfg.batch_size,
-            shuffle     = (shuffle and sampler is None),
-            sampler     = sampler,
-            num_workers = self.cfg.num_workers,
-            collate_fn  = collate_fn,
-            pin_memory  = True,
-            drop_last   = shuffle,
+            batch_size       = self.cfg.batch_size,
+            shuffle          = (shuffle and sampler is None),
+            sampler          = sampler,
+            num_workers      = self.cfg.num_workers,
+            collate_fn       = collate_fn,
+            pin_memory       = torch.cuda.is_available(),   # CPU da ogohlantirish yo'q
+            persistent_workers = (self.cfg.num_workers > 0),
+            drop_last        = shuffle,
         )
 
     def train_loader(self): return self._loader(self.train_ds, True)

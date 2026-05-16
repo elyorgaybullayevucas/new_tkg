@@ -76,6 +76,9 @@ def parse_args() -> Config:
 
     args = p.parse_args()
     cfg  = Config()
+    # Qaysi argumentlar CLI dan berilganini kuzatamiz
+    cli_args = {k for k, v in vars(args).items()
+                if v != p.get_default(k) and v is not None}
     for k, v in vars(args).items():
         if k == "no_fp16":
             cfg.fp16 = not v
@@ -83,6 +86,7 @@ def parse_args() -> Config:
             setattr(cfg, k, True)
         elif hasattr(cfg, k):
             setattr(cfg, k, v)
+    cfg._cli_args = cli_args   # dataset-override dan himoyalash uchun
     return cfg
 
 
@@ -91,58 +95,72 @@ def main():
     seed_everything(cfg.seed)
     logger = get_logger("main", cfg.log_dir)
 
+    # ── Device sozlash ────────────────────────────────────────────────────────
     if not torch.cuda.is_available():
         cfg.device = "cpu"
         cfg.fp16   = False
-        logger.warning("CUDA mavjud emas — CPU ishlatiladi")
+        logger.warning("CUDA mavjud emas — CPU ishlatiladi (GPU tavsiya etiladi!)")
+    else:
+        gpu = torch.cuda.get_device_name(0)
+        mem = torch.cuda.get_device_properties(0).total_memory / 1e9
+        logger.info(f"GPU: {gpu}  ({mem:.1f} GB)")
+        cfg.device = "cuda"
 
-    logger.info(f"Device: {cfg.device}  |  FP16: {cfg.fp16}")
+    # ── num_workers: Linux da fork() ishlaydi → ko'proq worker ──────────────
+    import os, platform
+    if "num_workers" not in getattr(cfg, "_cli_args", set()):
+        if platform.system() == "Linux":
+            cfg.num_workers = min(8, os.cpu_count() or 4)
+        else:
+            # Windows da spawn() og'ir → 0
+            cfg.num_workers = 0
+
+    logger.info(f"Device: {cfg.device}  |  FP16: {cfg.fp16}  |  num_workers: {cfg.num_workers}")
 
     # ── Dataset-specific sozlamalar — dm.setup() DAN OLDIN! ──────────────────
-    # use_reciprocal, max_history kabi flaglar dataset yuklanishidan oldin kerak
+    # CLI dan berilgan argumentlar override qilmaydi
+    cli = getattr(cfg, "_cli_args", set())
+    def _set(key, val):
+        if key not in cli:
+            setattr(cfg, key, val)
+
     if cfg.dataset == "GDELT":
-        cfg.num_paths          = 3
-        cfg.max_path_len       = 2
-        cfg.batch_size         = 512
-        cfg.num_negative       = 256
+        _set("num_paths",          3)
+        _set("max_path_len",       2)
+        _set("batch_size",         512)
+        _set("num_negative",       256)
         cfg.use_history        = True
-        cfg.max_history        = 32
+        _set("max_history",        32)
         cfg.use_direct_scoring = True
         cfg.use_diachronic     = True
         cfg.use_reciprocal     = True
-        cfg.w_direct           = 1.0
-        cfg.w_link             = 1.0
-        cfg.w_self_adv         = 0.5
-        cfg.w_ortho_reg        = 0.001
-        cfg.dropout            = 0.1
-        cfg.label_smoothing    = 0.1
-        cfg.weight_decay       = 1e-4
-        cfg.learning_rate      = 3e-4
-        cfg.num_epochs         = 30
+        _set("w_direct",           1.0)
+        _set("w_self_adv",         0.5)
+        _set("w_ortho_reg",        0.001)
+        _set("dropout",            0.1)
+        _set("learning_rate",      3e-4)
+        _set("num_epochs",         30)
         logger.info(
             "GDELT: num_paths=3, max_path_len=2, batch_size=512, "
             "use_history=True, max_history=32, reciprocal=True, epochs=30"
         )
 
     elif cfg.dataset in ("WIKI", "YAGO", "YAGOs"):
-        cfg.num_paths          = 8
-        cfg.max_path_len       = 3
-        cfg.batch_size         = 256
-        cfg.num_negative       = 256
+        _set("num_paths",          8)
+        _set("max_path_len",       3)
+        _set("batch_size",         256)
+        _set("num_negative",       256)
         cfg.use_history        = True
-        cfg.max_history        = 64
+        _set("max_history",        64)
         cfg.use_direct_scoring = True
         cfg.use_diachronic     = True
         cfg.use_reciprocal     = True
-        cfg.w_direct           = 2.0
-        cfg.w_link             = 1.0
-        cfg.w_self_adv         = 0.1   # 0.5 → 0.1: Adv loss link lossga raqobat qilmasin
-        cfg.w_ortho_reg        = 0.001
-        cfg.dropout            = 0.15
-        cfg.label_smoothing    = 0.1
-        cfg.weight_decay       = 1e-4
-        cfg.learning_rate      = 3e-4  # 5e-4 → 3e-4: pik LR pastroq, stabil o'qitish
-        cfg.num_epochs         = 500
+        _set("w_direct",           2.0)
+        _set("w_self_adv",         0.1)
+        _set("w_ortho_reg",        0.001)
+        _set("dropout",            0.15)
+        _set("learning_rate",      3e-4)
+        _set("num_epochs",         500)
         logger.info(
             f"{cfg.dataset}: use_history=True, max_history=64, reciprocal=True, "
             f"DirectScoring=True, Diachronic=True, w_direct=2.0, "
@@ -150,48 +168,42 @@ def main():
         )
 
     elif cfg.dataset == "ICEWS18":
-        cfg.num_paths          = 8
-        cfg.max_path_len       = 3
-        cfg.batch_size         = 512
-        cfg.num_negative       = 256
+        _set("num_paths",          8)
+        _set("max_path_len",       3)
+        _set("batch_size",         512)
+        _set("num_negative",       256)
         cfg.use_history        = True
-        cfg.max_history        = 64
+        _set("max_history",        64)
         cfg.use_direct_scoring = True
         cfg.use_diachronic     = True
         cfg.use_reciprocal     = True
-        cfg.w_direct           = 1.0
-        cfg.w_link             = 1.0
-        cfg.w_self_adv         = 0.5
-        cfg.w_ortho_reg        = 0.001
-        cfg.dropout            = 0.1
-        cfg.label_smoothing    = 0.1
-        cfg.weight_decay       = 1e-4
-        cfg.learning_rate      = 3e-4
-        cfg.num_epochs         = 50
+        _set("w_direct",           1.0)
+        _set("w_self_adv",         0.5)
+        _set("w_ortho_reg",        0.001)
+        _set("dropout",            0.1)
+        _set("learning_rate",      3e-4)
+        _set("num_epochs",         50)
         logger.info(
             "ICEWS18: use_history=True, max_history=64, reciprocal=True, "
             "DirectScoring=True, Diachronic=True, w_direct=1.0, epochs=50"
         )
 
     elif cfg.dataset == "ICEWS14":
-        cfg.num_paths          = 8
-        cfg.max_path_len       = 3
-        cfg.batch_size         = 512
-        cfg.num_negative       = 256
+        _set("num_paths",          8)
+        _set("max_path_len",       3)
+        _set("batch_size",         512)
+        _set("num_negative",       256)
         cfg.use_history        = True
-        cfg.max_history        = 64
+        _set("max_history",        64)
         cfg.use_direct_scoring = True
         cfg.use_diachronic     = True
         cfg.use_reciprocal     = True
-        cfg.w_direct           = 1.0
-        cfg.w_link             = 1.0
-        cfg.w_self_adv         = 0.5
-        cfg.w_ortho_reg        = 0.001
-        cfg.dropout            = 0.1
-        cfg.label_smoothing    = 0.1
-        cfg.weight_decay       = 1e-4
-        cfg.learning_rate      = 3e-4
-        cfg.num_epochs         = 50
+        _set("w_direct",           1.0)
+        _set("w_self_adv",         0.5)
+        _set("w_ortho_reg",        0.001)
+        _set("dropout",            0.1)
+        _set("learning_rate",      3e-4)
+        _set("num_epochs",         50)
         logger.info(
             "ICEWS14: use_history=True, max_history=64, reciprocal=True, "
             "DirectScoring=True, Diachronic=True, w_direct=1.0, epochs=50"
