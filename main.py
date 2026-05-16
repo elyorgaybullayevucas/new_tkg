@@ -149,36 +149,40 @@ def apply_dataset_config(cfg: Config, cli: set):
     cfg.use_reciprocal     = True
 
     if cfg.dataset == "ICEWS18":
-        _set("num_paths",     8);    _set("max_path_len",  3)
-        _set("batch_size",    512);  _set("num_negative",  256)
-        _set("max_history",   64);   _set("w_direct",      1.0)
-        _set("w_self_adv",    0.5);  _set("w_ortho_reg",   0.001)
-        _set("dropout",       0.1);  _set("learning_rate", 3e-4)
-        _set("num_epochs",    50)
+        _set("num_paths",        8);    _set("max_path_len",     3)
+        _set("batch_size",       512);  _set("num_negative",     256)
+        _set("max_history",      64);   _set("w_direct",         1.0)
+        _set("w_self_adv",       0.5);  _set("w_ortho_reg",      0.001)
+        _set("dropout",          0.1);  _set("learning_rate",    3e-4)
+        _set("w_copy",           0.5);  _set("w_hist_contrast",  0.3)
+        _set("num_epochs",       50)
 
     elif cfg.dataset == "ICEWS14":
-        _set("num_paths",     8);    _set("max_path_len",  3)
-        _set("batch_size",    512);  _set("num_negative",  256)
-        _set("max_history",   64);   _set("w_direct",      1.0)
-        _set("w_self_adv",    0.5);  _set("w_ortho_reg",   0.001)
-        _set("dropout",       0.1);  _set("learning_rate", 3e-4)
-        _set("num_epochs",    50)
+        _set("num_paths",        8);    _set("max_path_len",     3)
+        _set("batch_size",       512);  _set("num_negative",     256)
+        _set("max_history",      64);   _set("w_direct",         1.0)
+        _set("w_self_adv",       0.5);  _set("w_ortho_reg",      0.001)
+        _set("dropout",          0.1);  _set("learning_rate",    3e-4)
+        _set("w_copy",           0.5);  _set("w_hist_contrast",  0.3)
+        _set("num_epochs",       50)
 
     elif cfg.dataset in ("WIKI", "YAGO", "YAGOs"):
-        _set("num_paths",     8);    _set("max_path_len",  3)
-        _set("batch_size",    256);  _set("num_negative",  256)
-        _set("max_history",   64);   _set("w_direct",      2.0)
-        _set("w_self_adv",    0.1);  _set("w_ortho_reg",   0.001)
-        _set("dropout",       0.15); _set("learning_rate", 3e-4)
-        _set("num_epochs",    500)
+        _set("num_paths",        8);    _set("max_path_len",     3)
+        _set("batch_size",       256);  _set("num_negative",     256)
+        _set("max_history",      64);   _set("w_direct",         2.0)
+        _set("w_self_adv",       0.1);  _set("w_ortho_reg",      0.001)
+        _set("dropout",          0.15); _set("learning_rate",    3e-4)
+        _set("w_copy",           2.0);  _set("w_hist_contrast",  0.5)  # copy signal critical for WIKI/YAGO
+        _set("num_epochs",       500)
 
     elif cfg.dataset == "GDELT":
-        _set("num_paths",     3);    _set("max_path_len",  2)
-        _set("batch_size",    512);  _set("num_negative",  256)
-        _set("max_history",   32);   _set("w_direct",      1.0)
-        _set("w_self_adv",    0.5);  _set("w_ortho_reg",   0.001)
-        _set("dropout",       0.1);  _set("learning_rate", 3e-4)
-        _set("num_epochs",    30)
+        _set("num_paths",        3);    _set("max_path_len",     2)
+        _set("batch_size",       512);  _set("num_negative",     256)
+        _set("max_history",      32);   _set("w_direct",         1.0)
+        _set("w_self_adv",       0.5);  _set("w_ortho_reg",      0.001)
+        _set("dropout",          0.1);  _set("learning_rate",    3e-4)
+        _set("w_copy",           1.0);  _set("w_hist_contrast",  0.3)
+        _set("num_epochs",       30)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -343,6 +347,8 @@ def main():
         label_smoothing    = cfg.label_smoothing,
         w_direct           = cfg.w_direct,
         w_pattern_div      = cfg.w_pattern_div,
+        w_copy             = cfg.w_copy,
+        w_hist_contrast    = cfg.w_hist_contrast,
         use_direct_scoring = cfg.use_direct_scoring,
         use_diachronic     = cfg.use_diachronic,
         use_history        = cfg.use_history,

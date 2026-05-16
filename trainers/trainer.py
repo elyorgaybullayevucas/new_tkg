@@ -79,7 +79,7 @@ class EliteTrainer:
         extra_params: list = []
         for name in ("relation_profile", "hist_transformer", "hist_to_entity",
                      "gate_mem", "nb_ctx", "hist_norm", "query_hist_norm", "pattern_lib",
-                     "direct_head", "dia_amp", "dia_freq", "dia_phase",
+                     "copy_head", "direct_head", "dia_amp", "dia_freq", "dia_phase",
                      # backward compat
                      "msa", "rel_mem", "pna", "csa", "history_encoder", "hist_gate"):
             m = getattr(self._raw, name, None)
@@ -135,7 +135,8 @@ class EliteTrainer:
     def train_one_epoch(self, epoch: int) -> Dict[str, float]:
         self.model.train()
         totals: Dict[str, float] = {
-            "loss": 0, "link": 0, "contrastive": 0, "self_adv": 0, "ortho": 0
+            "loss": 0, "link": 0, "contrastive": 0, "self_adv": 0,
+            "ortho": 0, "hist_contrast": 0
         }
         n = 0
 
@@ -164,10 +165,12 @@ class EliteTrainer:
                     history=history, hist_mask=hist_mask,
                 )
                 total_loss = (
-                    self.cfg.w_link        * losses["link"]
+                    self.cfg.w_link          * losses["link"]
                     + self.cfg.w_contrastive * losses["contrastive"]
                     + self.cfg.w_self_adv    * losses["self_adv"]
                     + self.cfg.w_ortho_reg   * losses["ortho_reg"]
+                    + self.cfg.w_hist_contrast * losses.get(
+                        "hist_contrast", torch.tensor(0.0, device=subjects.device))
                 )
 
             self.optimizer.zero_grad()
@@ -184,11 +187,13 @@ class EliteTrainer:
 
             self.scheduler.step()
 
-            totals["loss"]        += total_loss.item()
-            totals["link"]        += losses["link"].item()
-            totals["contrastive"] += losses["contrastive"].item()
-            totals["self_adv"]    += losses["self_adv"].item()
-            totals["ortho"]       += losses["ortho_reg"].item()
+            totals["loss"]          += total_loss.item()
+            totals["link"]          += losses["link"].item()
+            totals["contrastive"]   += losses["contrastive"].item()
+            totals["self_adv"]      += losses["self_adv"].item()
+            totals["ortho"]         += losses["ortho_reg"].item()
+            totals["hist_contrast"] += losses.get("hist_contrast",
+                                           torch.tensor(0.0)).item()
             n += 1
 
             if n % max(1, len(self.train_loader) // 5) == 0:
