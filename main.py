@@ -357,6 +357,18 @@ def main():
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Model parametrlari: {n_params/1e6:.2f}M")
 
+    # ── Entity Frequency — HistoricalCopyHead normalization ───────────────────
+    # HTKGP dan g'oya: hub entitylar (juda ko'p uchraydigan) ni bosish
+    # → WIKI/YAGO da H@1 oshadi
+    if model.copy_head is not None:
+        entity_freq = dm.get_entity_freq()
+        model.copy_head.set_entity_freq(entity_freq)
+        logger.info(
+            f"Entity freq yuklandi: max={entity_freq.max():.0f} "
+            f"mean={entity_freq.mean():.1f} "
+            f"(hub suppression yoqildi)"
+        )
+
     # Multi-GPU (DataParallel)
     n_gpus = torch.cuda.device_count()
     if n_gpus > 1:
