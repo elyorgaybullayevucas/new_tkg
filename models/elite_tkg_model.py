@@ -395,6 +395,20 @@ class HistoricalCopyHead(nn.Module):
         # Global copy weight (learnable)
         self.w_copy = nn.Parameter(torch.tensor(1.0))
 
+        # ── Frequency-Inverse Normalization (HTKGP entropy idea) ──────────────
+        # Tez-tez uchraydigan (hub) entitylar noto'g'ri yuqori ball olmasligi uchun
+        # log(1 + freq) bilan bo'lamiz — kam uchraydigan entity → kuchaytiriladi
+        self.register_buffer('ent_freq', torch.ones(num_entities, dtype=torch.float))
+        self._freq_initialized = False   # set_entity_freq() chaqirilganmi?
+
+    def set_entity_freq(self, freq: torch.Tensor):
+        """
+        Training ma'lumotlaridan entity chastotalarini berish.
+        freq: (N,) har bir entity necha marta subject yoki object bo'lgani.
+        """
+        self.ent_freq.copy_(freq.float().clamp(min=1.0))
+        self._freq_initialized = True
+
     def forward(
         self,
         hist_ents:   torch.Tensor,   # (B, H) entity indices
@@ -420,6 +434,14 @@ class HistoricalCopyHead(nn.Module):
         ent_idx    = hist_ents.clamp(0, N - 1)                  # (B, H)
         raw_scores = torch.zeros(B, N, device=hist_ents.device)
         raw_scores.scatter_add_(1, ent_idx, decay)              # (B, N)
+
+        # ── Frequency-Inverse Normalization (HTKGP entropy idea) ─────────────
+        # Hub entitylar (ko'p uchraydigan) noto'g'ri ustunlik qilmasligi uchun
+        # log(1 + freq) bilan normalize qilamiz
+        if self._freq_initialized:
+            freq_norm = torch.log1p(self.ent_freq)               # (N,)
+            freq_norm = freq_norm / freq_norm.mean().clamp(min=1e-8)
+            raw_scores = raw_scores / freq_norm.unsqueeze(0)     # (B, N)
 
         # Query-aware gate: bu query uchun copy qanchalik ishonchli?
         gate        = self.gate(query_vec)                       # (B, 1)
@@ -622,6 +644,17 @@ class ORIONModel(nn.Module):
         self.rel_temp = nn.Embedding(num_relations * 2, 1)   # *2 — teskari relatsiyalar ham
         nn.init.constant_(self.rel_temp.weight, 1.0)
 
+        # ── Adaptive Per-Query Temperature (HTKGP adaptive curvature idea) ────
+        # Query vektoridan sharpening koeffitsiyentini hisoblaydi.
+        # Ishonchli querylar → keskinroq distribusiya → H@1 yaxshilanadi.
+        self.query_temp = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 4, 1),
+            nn.Softplus(),   # musbat chiqish kafolati
+        )
+
         self.drop = nn.Dropout(dropout)
         self.register_buffer("all_entity_ids", torch.arange(num_entities, dtype=torch.long))
 
@@ -753,7 +786,11 @@ class ORIONModel(nn.Module):
         # ── Scoring ───────────────────────────────────────────────────────────
         all_ent = self.ent_emb(self.all_entity_ids)
         scores  = self.link_head(final_q, all_ent)
-        scores  = scores * self.rel_temp(relations).squeeze(-1).unsqueeze(1)
+
+        # Rel-temp × query-temp: per-relation × per-query adaptive sharpening
+        rel_t   = self.rel_temp(relations).squeeze(-1)           # (B,)
+        qry_t   = self.query_temp(final_q).squeeze(-1)           # (B,)
+        scores  = scores * (rel_t * qry_t).unsqueeze(1)         # (B, N)
 
         if self.direct_head is not None:
             s_t = s_dynamic if s_dynamic is not None else self.ent_emb(subjects)
@@ -841,7 +878,11 @@ class ORIONModel(nn.Module):
 
         all_ent = self.ent_emb(self.all_entity_ids)
         scores  = self.link_head(final_q, all_ent)
-        scores  = scores * self.rel_temp(relations).squeeze(-1).unsqueeze(1)
+
+        # Rel-temp × query-temp
+        rel_t   = self.rel_temp(relations).squeeze(-1)
+        qry_t   = self.query_temp(final_q).squeeze(-1)
+        scores  = scores * (rel_t * qry_t).unsqueeze(1)
 
         if self.direct_head is not None:
             s_t = s_dynamic if s_dynamic is not None else self.ent_emb(subjects)

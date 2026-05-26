@@ -133,3 +133,20 @@ class TKGDataModule:
     def train_loader(self): return self._loader(self.train_ds, True)
     def valid_loader(self): return self._loader(self.valid_ds, False)
     def test_loader(self):  return self._loader(self.test_ds,  False)
+
+    def get_entity_freq(self) -> torch.Tensor:
+        """
+        Training datasetidan entity chastotalarini hisoblaydi.
+        Qaytaradi: (N,) float tensor — har bir entity necha marta
+                   subject yoki object sifatida uchragani.
+
+        HistoricalCopyHead.set_entity_freq() ga beriladi →
+        log(1+freq) normalizatsiya orqali hub entitylarni bosadi.
+        """
+        assert self.train_ds is not None, "setup() avval chaqirilishi kerak"
+        N    = self.cfg.num_entities
+        freq = torch.zeros(N, dtype=torch.float)
+        for s, r, o, t in self.train_ds.quads:
+            if s < N: freq[s] += 1.0
+            if o < N: freq[o] += 1.0
+        return freq.clamp(min=1.0)
