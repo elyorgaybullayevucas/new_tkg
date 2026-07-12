@@ -1,179 +1,109 @@
-# ORION — Temporal Knowledge Graph Link Prediction
+# TREA-TKG — Temporal Knowledge Graph Link Prediction
 
-**O**ntology-aware **R**elational pattern **I**nference with **O**rdered **N**etworks
+**T**emporal **R**ecurrence-**E**nhanced **A**ttention for TKG forecasting.
+
+Predicts the missing object entity for a query `(subject, relation, ?, time)`
+using only facts strictly before `time` (extrapolation setting).
 
 ---
 
 ## Arxitektura
 
 ```
-Input: (subject s, relation r, query_time t_q)
-       + paths:   (B, P, L, 3)  — temporal BFS yo'llari
-       + history: (B, H, 3)     — entity s ning o'tgan faktlari
+Input: (subject s, relation r, query_time t) + s ning tarixi: [(rel, obj, Δt), ...]
          |
          v
-[1] EMBEDDING LAYER
-    ent_emb[s]  ∈ R^entity_dim   (Xavier init)
-    rel_emb[r]  ∈ R^relation_dim (inverse relatsiyalar ham: 2R slots)
-    delta_enc(Δt) — log-sinusoidal: Δt = t_q - t_history
-
+[1] EMBEDDING
+    ent_emb[s], rel_emb[r]  (Xavier init, inverse relatsiyalar uchun 2R slot)
+    query = h_s + h_r
          |
          v
-[2] HISTORY BRANCH (use_history=True)
-    ├─ RelationProfile (RPE) [NOVEL]:
-    │    profile[r] = Σ exp(-γ·Δt_i)  — vaqt-og'irlangan faollik
-    │    → (B, hidden_dim)
-    ├─ HistoryTransformer [NOVEL]:
-    │    step = [rel_emb_i, delta_enc_i]  (entity yo'q — entity-independent!)
-    │    CLS token + Self-Attention → (B, hidden_dim)
-    ├─ GatedTemporalMemory:
-    │    g = σ(W[e_static; e_dynamic])
-    │    s_dynamic = g⊙tanh(W_h·e_d) + (1-g)⊙e_static
-    └─ hist_signal = LayerNorm(profile_enc + nb_ctx)
-
+[2] ADAPTIVE TEMPORAL ATTENTION  ★ yagona ilmiy yangilik
+    Multi-head attention, s ning tarixi ustida.
+    Har bir RELATION o'zining o'rganiluvchi vaqt-parchash (decay) tezligiga ega:
+      attn_logit = (q·k)/√d − softplus(α_r)·Δt
+    (DaeMon/CyGNet dagi qattiq/global decay'dan farqli — masalan "harbiy
+    hujum" tez eskiradi, "ontologik" relation (YAGO) deyarli o'zgarmaydi)
          |
          v
-[3] PATH ENCODER (entity-independent)
-    For each of P paths of length L:
-      step = [rel_emb, delta_enc]    ← ENTITY YO'Q
-      PathTransformer(CLS, steps) → (B, P, hidden_dim)
-
+[3] FUSION FFN
+    query_repr = FFN([query, tarix konteksti])
          |
          v
-[4] QUERY + CROSS-PATH ATTENTION
-    q = QueryEncoder([s_emb; r_emb; delta_zero])
-    q += hist_signal
-    cross_out = q + MHA(q, path_reprs, path_reprs)   [B, H]
+    ┌────────────────────────┐        ┌──────────────────────────────┐
+    │ A: DistMult scoring    │        │ B: Copy score                │
+    │ (query_repr ⊙ h_r)·h_o │        │ recency × log(1+chastota),   │
+    │                        │        │ trea/data.py da oldindan     │
+    │                        │        │ hisoblanadi (O(occurrences)  │
+    │                        │        │ per query, dataset-wide scan │
+    │                        │        │ emas)                        │
+    └───────────┬────────────┘        └──────────────┬───────────────┘
+                └───────────────┬───────────────────--┘
+                                v
+[4] ADAPTIVE GATE
+    g = σ(MLP(query_repr))
+    final_logits = g·A + (1−g)·B
 
-         |
-         v
-[5] TEMPORAL PATTERN LIBRARY (TPL) [NOVEL]
-    K = 128 learnable pattern vectors  (entity-independent)
-    attn = softmax(q · patterns^T / sqrt(H))
-    pattern_out = attn @ patterns      [B, H]
-    + diversity loss: L_div = E[sim(p_i, p_j)^2]
-
-         |
-         v
-[6] THREE-SIGNAL FUSION [NOVEL]
-    fusion_in = cat[cross_out, hist_signal, pattern_out]  [B, 3H]
-    fused = FusionMLP(fusion_in)   3H→2H→H
-    final_q = LayerNorm(fused + cross_out)  [residual]
-    final_q = LayerNorm(final_q + FFN(final_q))
-
-         |
-         v
-[7] SCORING HEADS
-    Main:   scores = LinkHead(final_q) · ent_emb^T   [B, E]
-    Direct: scores += w_direct × DistMult(s_dyn, r)  [B, E]
-    Scale:  scores *= rel_temp[r]  (per-relation temperature)
-
-LOSS = w_link·L_CE + w_contrastive·L_pattern_div + w_self_adv·L_adv + w_ortho·L_ortho
+LOSS = label-smoothed CE (1-vs-N)  +  α · hard-negative triplet loss (batch ichida)
 ```
 
-### Yangiliklar (vs. DaeMon, RE-GCN, xERTE)
-
-| Komponent | Avvalgi modellar | ORION |
-|-----------|-----------------|-------|
-| Tarix koding | Sequential RNN (gradient yo'qoladi) | Parallel Transformer (entity-independent) |
-| Temporal encoding | Mutlaq snapshot indeksi | Relative Δt, log-sinusoidal |
-| Pattern learning | Yo'q | **Temporal Pattern Library** (K=128) |
-| Relation faollik | Yo'q | **Relation Profile Encoding** |
-| Signal birlashtirish | 1–2 signal | **3-Signal Fusion** (path+hist+pattern) |
+To'liq izoh: [trea/model.py](trea/model.py) docstringlarida.
 
 ---
 
-## O'rnatish (Linux server)
+## O'rnatish (Linux GPU server)
 
 ```bash
-# 1. Muhit
-conda create -n orion python=3.10 -y
-conda activate orion
+conda create -n trea python=3.10 -y
+conda activate trea
 
 # CUDA 12.x bo'lsa:
 pip install torch==2.3.0 --index-url https://download.pytorch.org/whl/cu121
-# CUDA 11.8 bo'lsa:
-pip install torch==2.3.0 --index-url https://download.pytorch.org/whl/cu118
+pip install tqdm numpy
 
-pip install tqdm
-
-# 2. Data
+# Data
 unzip data.zip            # data/ papkasi hosil bo'ladi
-
-# 3. Strukturani tekshirish
-ls data/
-# GDELT/  ICEWS18/  WIKI/  YAGO/  YAGOs/
+ls data/                  # ICEWS18/  WIKI/  YAGO/  GDELT/
 ```
+
+`data/ICEWS14/` repoda **yo'q qilingan** — u ICEWS18 ma'lumotlarining
+nusxasi edi (haqiqiy ICEWS14 emas). Haqiqiy manba topilsa qayta qo'shiladi.
 
 ---
 
 ## Ishlatish
 
-### ICEWS18 (asosiy benchmark)
-```bash
-python main.py --dataset ICEWS18
-# Default: entity_dim=256, hidden_dim=512, epochs=50
-# ~6-8 soat (1x A100 GPU)
-```
+Har bir dataset uchun batch_size / history_len / early-stopping patience /
+max_epochs avtomatik qo'llanadi (`trea/config.py:apply_dataset_defaults`) —
+training validation MRR to'xtaganda avtomatik to'xtaydi, qat'iy epoch
+sonida emas.
 
-### WIKI / YAGO (kichik, tez)
 ```bash
-python main.py --dataset WIKI
-python main.py --dataset YAGO
-# Default: 500 epoch, ~12-24 soat
-```
+python train_trea.py --dataset ICEWS18
+python train_trea.py --dataset WIKI
+python train_trea.py --dataset YAGO
+python train_trea.py --dataset GDELT
 
-### GDELT (katta)
-```bash
-python main.py --dataset GDELT
-# Default: 30 epoch, ~4-6 soat
-```
+# yoki:
+./run.sh ICEWS18
 
-### GPU xotirasi kam bo'lsa (12 GB dan kam)
-```bash
-python main.py --dataset ICEWS18 \
-    --entity_dim 128 \
-    --hidden_dim 256 \
-    --batch_size 256 \
-    --num_negative 128
-```
+# Har qanday parametrni qo'lda override qilish
+python train_trea.py --dataset YAGO --embed_dim 128 --lr 2e-3
 
-### Resume (to'xtatib davom ettirish)
-```bash
-python main.py --dataset ICEWS18 --resume checkpoints/ICEWS18_best.pt
-```
+# CPU (GPU yo'q bo'lsa)
+python train_trea.py --dataset YAGO --device cpu --batch_size 64 --num_workers 0
 
-### Ko'p GPU
-```bash
-# DataParallel avtomatik ishlatiladi
-CUDA_VISIBLE_DEVICES=0,1 python main.py --dataset ICEWS18
+# CPU-only sanity/smoke test (haqiqiy GPU kerak emas)
+python -m trea.smoke_test
 ```
 
 ---
 
-## Kutilayotgan natijalar
+## Natijalar
 
-### ICEWS18
-| Metrika | SOTA (CEN, 2022) | ORION (taxminiy) |
-|---------|-----------------|-----------------|
-| MRR     | 0.381           | 0.39–0.43       |
-| Hits@1  | 0.284           | 0.29–0.33       |
-| Hits@3  | 0.431           | 0.44–0.49       |
-| Hits@10 | 0.573           | 0.58–0.63       |
-
-### WIKI
-| Metrika | SOTA | ORION (taxminiy) |
-|---------|------|-----------------|
-| MRR     | 0.820| 0.82–0.86       |
-| Hits@1  | 0.763| 0.76–0.81       |
-| Hits@10 | 0.919| 0.92–0.95       |
-
-### YAGO
-| Metrika | SOTA | ORION (taxminiy) |
-|---------|------|-----------------|
-| MRR     | 0.878| 0.87–0.92       |
-| Hits@1  | 0.844| 0.83–0.89       |
-| Hits@10 | 0.937| 0.93–0.96       |
+Haqiqiy MRR/Hits@K raqamlari GPU serverda to'liq training tugagach
+`checkpoints/trea/<DATASET>_results.json` ga saqlanadi — bu README'da
+tekshirilmagan raqamlar keltirilmaydi.
 
 ---
 
@@ -181,63 +111,23 @@ CUDA_VISIBLE_DEVICES=0,1 python main.py --dataset ICEWS18
 
 ```
 .
-├── main.py                  # Ishga tushirish (argparse + dataset config)
-├── config.py                # Config dataclass, dataset-specific overrides
+├── train_trea.py            # Ishga tushirish nuqtasi
+├── run.sh                   # Linux server uchun wrapper skript
+├── trea/
+│   ├── config.py            # TREAConfig + apply_dataset_defaults()
+│   ├── data.py               # GraphIndex (tarix + copy-score indekslash),
+│   │                          #   TKGDataset, collate_fn, TKGDataLoader
+│   ├── model.py              # TemporalEncoding, AdaptiveTemporalAttention,
+│   │                          #   AdaptiveGate, TREAModel (DistMult scoring)
+│   ├── loss.py               # LabelSmoothingCE + HardNegativeTripletLoss
+│   ├── trainer.py            # TREATrainer: early stopping + checkpoint
+│   ├── evaluate.py           # Filtered MRR/Hits@K (utils/metrics.py orqali)
+│   └── smoke_test.py         # CPU-only correctness test
 ├── data/
-│   ├── dataset.py           # TKGEliteDataset: quad loading, BFS paths, history
-│   ├── datamodule.py        # DataLoader + relation-balanced sampler
-│   ├── ICEWS18/             # entity2id.txt, relation2id.txt, train/valid/test.txt
-│   ├── WIKI/
-│   ├── YAGO/
-│   ├── YAGOs/
-│   └── GDELT/
-├── models/
-│   └── elite_tkg_model.py   # ORION model (740 qator):
-│                            #   RelativeTemporalEncoding
-│                            #   RelationProfile  [NOVEL]
-│                            #   TemporalPatternLibrary  [NOVEL]
-│                            #   TemporalTransformer (shared: hist + path)
-│                            #   GatedTemporalMemory
-│                            #   LinkPredHead, DirectScoringHead
-│                            #   ORIONModel.forward() + predict()
-├── trainers/
-│   └── trainer.py           # EliteTrainer:
-│                            #   OneCycleLR + differential LR
-│                            #   FP16 mixed precision (A100/V100)
-│                            #   tqdm progress bars
-│                            #   MRR/Hits@K evaluation + checkpoint
-└── utils/
-    ├── logging.py           # Stdout + file logger
-    ├── metrics.py           # compute_ranks(), ranks_to_metrics()
-    └── paths.py             # build_graph(), sample_paths() (temporal BFS)
-```
-
----
-
-## Training output namunasi
-
-```
-==================================================================================
-  ORION -- Temporal Knowledge Graph Link Prediction
-  Dataset: ICEWS18  |  Epochs: 50  |  Device: cuda  |  FP16: True
-==================================================================================
-
-   Epoch     Loss     Link      Adv        LR      MRR      H@1      H@3     H@10   Best
-  ------------------------------------------------------------------------------
-       1    4.8231   4.6012   0.3401  3.00e-05   0.1823   0.1201   0.2011   0.3512
-       5    2.3412   2.1802   0.2810  1.20e-04   0.2934   0.2102   0.3401   0.5021  *
-      10    1.8901   1.7201   0.2410  2.40e-04   0.3512   0.2634   0.4012   0.5634  *
-      ...
-      50    0.9812   0.8901   0.1802  3.00e-06   0.4123   0.3201   0.4801   0.6234  *
-  ------------------------------------------------------------------------------
-  ==============================================================================
-  TEST NATIJALARI -- ICEWS18
-  ==============================================================================
-  MRR             0.4089   ################
-  Hits@1          0.3124   ############
-  Hits@3          0.4712   ###################
-  Hits@10         0.6201   ########################
-  ==============================================================================
+│   ├── ICEWS18/ WIKI/ YAGO/ GDELT/   # entity2id.txt, relation2id.txt, train/valid/test.txt
+├── utils/
+│   ├── logging.py
+│   └── metrics.py            # compute_ranks(), ranks_to_metrics() — trea ham shundan foydalanadi
 ```
 
 ---
@@ -246,13 +136,10 @@ CUDA_VISIBLE_DEVICES=0,1 python main.py --dataset ICEWS18
 
 | Parametr | Default | Tavsif |
 |----------|---------|--------|
-| `--entity_dim` | 256 | Entity embedding o'lchami |
-| `--hidden_dim` | 512 | Transformer hidden o'lchami |
-| `--num_paths` | 8 | Har bir query uchun yo'llar soni |
-| `--max_path_len` | 3 | Maksimal yo'l uzunligi (hop) |
-| `--max_history` | 64 | Entity tarix uzunligi |
-| `--num_negative` | 256 | Har bir positive uchun negative soni |
-| `--w_direct` | 1.0 | DistMult scoring og'irligi |
-| `--w_self_adv` | 0.5 | Self-adversarial loss og'irligi |
-| `--epochs` | 50 | Epochlar soni |
-| `--lr` | 3e-4 | Maksimal learning rate (OneCycleLR) |
+| `--embed_dim` | 256 | Entity/relation embedding o'lchami |
+| `--history_len` | dataset-ga qarab | Entity tarixidan qancha TIMESTEP orqaga qaraladi |
+| `--num_heads` | 4 | Adaptive Temporal Attention head soni |
+| `--copy_lambda` | 0.5 | Copy score uchun vaqt-parchash koeffitsiyenti |
+| `--max_epochs` | dataset-ga qarab | Xavfsizlik chegarasi — odatda early stop undan oldin ishlaydi |
+| `--early_stop_patience` | dataset-ga qarab | Necha eval round MRR yaxshilanmasa to'xtaydi |
+| `--lr` | 1e-3 | Learning rate (CosineAnnealingLR) |

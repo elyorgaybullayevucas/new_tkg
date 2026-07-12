@@ -1,5 +1,5 @@
 #!/bin/bash
-# ORION — Temporal KG Link Prediction
+# TREA-TKG — Temporal KG Link Prediction
 # Linux server da ishlatish uchun skript
 #
 # Ishlatish:
@@ -8,8 +8,7 @@
 #   ./run.sh WIKI              # WIKI dataset
 #   ./run.sh YAGO              # YAGO dataset
 #   ./run.sh GDELT             # GDELT dataset
-#   ./run.sh ICEWS18 --resume checkpoints/ICEWS18_best.pt
-#   ./run.sh ICEWS18 --entity_dim 128 --hidden_dim 256   # kichik GPU
+#   ./run.sh ICEWS18 --embed_dim 128   # kichik GPU
 
 set -e
 
@@ -17,7 +16,7 @@ DATASET=${1:-ICEWS18}
 shift 2>/dev/null || true  # birinchi argumentdan keyin qolganlari extra args
 
 echo "======================================================================"
-echo "  ORION TKG — $DATASET"
+echo "  TREA-TKG — $DATASET"
 echo "  $(date)"
 echo "======================================================================"
 
@@ -33,15 +32,17 @@ else:
 "
 
 # Checkpoint papkasi
-mkdir -p checkpoints logs
+mkdir -p checkpoints/trea logs/trea
 
-# O'qitish
-python main.py \
+# O'qitish — per-dataset default'lar (batch_size, history_len, early stopping
+# patience, max_epochs) trea/config.py:apply_dataset_defaults() da avtomatik
+# qo'llanadi; kerak bo'lsa "$@" orqali istalgan flag override qilinadi.
+python train_trea.py \
     --dataset "$DATASET" \
     "$@"
 
 echo ""
 echo "======================================================================"
-echo "  Natijalar: checkpoints/${DATASET}_best.pt"
-echo "  Loglar:    logs/"
+echo "  Natijalar: checkpoints/trea/${DATASET}_results.json"
+echo "  Loglar:    logs/trea/"
 echo "======================================================================"
